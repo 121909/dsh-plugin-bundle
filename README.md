@@ -14,3 +14,7 @@ dsh plugin --profile web add "git+https://github.com/lili-luo/dsh-plugin-bundle.
 ```
 
 协议说明：[Agent Client Protocol](https://agentclientprotocol.com/get-started/introduction)。`agy acp` 的产品说明：[Antigravity CLI ACP](https://antigravity.google/docs/cli/acp/)。
+
+## 社区
+
+本项目在 [LINUX DO](https://linux.do) 社区进行开源推广，感谢社区佬友的交流、反馈与建议。

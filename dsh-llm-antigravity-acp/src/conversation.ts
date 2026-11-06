@@ -23,6 +23,34 @@ export { CALL_TOOL_NAME }
 
 /** Agent-side transport retry notice streamed as message text, e.g. `⚠ API error (attempt 1): …`. */
 const AGENT_RETRY_NOTICE = /^\s*⚠\s*API error \(attempt \d+\)/
+/** First sentence of the notice agy inserts when one generation hits its own output cap. */
+const OUTPUT_LIMIT_HEAD = 'your previous response was cut off because it exceeded the output token limit'
+/** Second sentence of that same notice. */
+const OUTPUT_LIMIT_TAIL = 'please continue from where you left off, keeping your response shorter'
+
+/** Collapse agy's warning mark and line breaks so the notice can be recognized across chunks. */
+function noticeText(raw: string): string {
+  return raw.replace(/⚠/g, ' ').replace(/\bError:/gi, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+/**
+ * Classify text against agy's output-cap continuation notice.
+ * `drop` is only that notice, `hold` is still a prefix of it, `emit` is model text.
+ */
+export function classifyOutputLimitNotice(raw: string): 'drop' | 'hold' | 'emit' {
+  const text = noticeText(raw)
+  if (text.length === 0) return 'emit'
+  const stripped = text.replace(/\s*retries remaining:\s*\d*\s*$/i, '').trim()
+  const retry = text.slice(stripped.length).trim()
+  if (retry.length > 0 && !/^retries remaining:\s*\d*$/i.test(retry)) return 'emit'
+  if (stripped.length === 0) return /^retries remaining:\s*\d+$/i.test(text) ? 'drop' : 'emit'
+  const full = `${OUTPUT_LIMIT_HEAD} ${OUTPUT_LIMIT_TAIL}`
+  if (stripped === full || stripped === OUTPUT_LIMIT_HEAD || stripped === OUTPUT_LIMIT_TAIL) return 'drop'
+  if (full.startsWith(stripped) && stripped.startsWith('your previous')) return 'hold'
+  if (OUTPUT_LIMIT_TAIL.startsWith(stripped) && stripped.startsWith('please continue from where you left off')) return 'hold'
+  if ('retries remaining:'.startsWith(text) && text.startsWith('retries')) return 'hold'
+  return 'emit'
+}
 
 /** Tool the agent calls to keep waiting on a relayed DSH tool result. */
 export const AWAIT_TOOL_NAME = 'dsh_await_result'
@@ -87,6 +115,8 @@ export class AcpTurn {
   produced = false
   /** Agent-side transport retry notices dropped from the output. */
   retryNotices = 0
+  /** Message text that may still be the start of agy's output-cap notice. */
+  private noticeHold = ''
   /** Model calls inside this turn whose usage was already emitted per-step from SQLite. */
   emittedCalls = 0
   /** Cumulative raw token counts already emitted per-step from SQLite during this turn. */
@@ -139,16 +169,50 @@ export class AcpTurn {
    */
   onUpdate(update: AcpSessionUpdate): void {
     const text = update.content?.type === 'text' ? update.content.text ?? '' : ''
-    if (update.sessionUpdate === 'agent_message_chunk' && AGENT_RETRY_NOTICE.test(text)) {
-      // The agent streams its own transport retries as message text; they are not model output.
+    if (update.sessionUpdate === 'agent_message_chunk' && text.length > 0) {
+      this.consumeMessage(text)
+      return
+    }
+    if (update.sessionUpdate === 'agent_thought_chunk') {
+      const held = this.recoverNoticeHold()
+      if (held.length > 0 && !this.relaying) this.events.push({ kind: 'text', text: held })
+      if (text.length > 0 && !this.relaying) this.events.push({ kind: 'thought', text })
+    }
+  }
+
+  /**
+   * Keep a message chunk out of the chat while it is only agy's output-cap notice.
+   * @param text - one streamed message chunk.
+   */
+  private consumeMessage(text: string): void {
+    const combined = this.noticeHold + text
+    const kind = classifyOutputLimitNotice(combined)
+    if (kind === 'hold') {
+      this.noticeHold = combined
+      return
+    }
+    this.noticeHold = ''
+    if (kind === 'drop' || AGENT_RETRY_NOTICE.test(combined)) {
       this.retryNotices++
       return
     }
-    if (update.sessionUpdate === 'agent_message_chunk' && text.length > 0) {
-      if (!this.relaying) this.events.push({ kind: 'text', text })
-    } else if (update.sessionUpdate === 'agent_thought_chunk' && text.length > 0) {
-      if (!this.relaying) this.events.push({ kind: 'thought', text })
+    if (!this.relaying) this.events.push({ kind: 'text', text: combined })
+  }
+
+  /**
+   * Release a held prefix once the message stream moves on.
+   * A finished output-cap notice is counted and discarded; anything else is returned for emission.
+   * @returns model text to show, or an empty string.
+   */
+  recoverNoticeHold(): string {
+    if (this.noticeHold.length === 0) return ''
+    const held = this.noticeHold
+    this.noticeHold = ''
+    if (classifyOutputLimitNotice(held) === 'drop') {
+      this.retryNotices++
+      return ''
     }
+    return this.relaying ? '' : held
   }
 
   /**
@@ -246,6 +310,13 @@ export async function * pumpStep(turn: AcpTurn, host: PumpHost, signal: AbortSig
       yield * close()
       yield { type: 'finish', reason: { kind: 'aborted', failure: { message: 'Request aborted', code: 'ABORTED' } } }
       return
+    }
+    if (turn.events.peek()?.kind !== 'text') {
+      const held = turn.recoverNoticeHold()
+      if (held.length > 0) {
+        turn.produced = true
+        yield * append('text', held)
+      }
     }
     const event = turn.events.shift() as TurnEvent
     switch (event.kind) {

@@ -295,6 +295,14 @@ test('agent transport retry notices never reach the model output', async () => {
   assert.match(textOf(chunks), /^echo:/)
 })
 
+test('agy output-limit continuation notices never reach the model output', async () => {
+  const { adapter } = makeRuntime()
+  const chunks = await collect(adapter.stream({ provider: 'antigravity', model: 'gemini-4-argon', sessionId: 'S11b', messages: [sys, user('u1', 'OUTLIMIT hi')] }))
+  assert.doesNotMatch(textOf(chunks), /output token limit/)
+  assert.doesNotMatch(textOf(chunks), /Retries remaining/)
+  assert.match(textOf(chunks), /^echo:/)
+})
+
 test('cache reads stay disjoint from the uncached input count', () => {
   const usage = toTokenUsage({ inputTokens: 11_677, outputTokens: 321, cachedReadTokens: 31_377, cachedWriteTokens: 0, totalTokens: 43_375 })
   assert.deepEqual(usage, {

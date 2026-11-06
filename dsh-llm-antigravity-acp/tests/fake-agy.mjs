@@ -144,6 +144,10 @@ async function runToolCall(s, name, args, opts = {}) {
 async function runPrompt(s, text) {
   update(s.id, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: `thinking(${s.level})` } })
   if (text.includes('NOTICE')) update(s.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n⚠ API error (attempt 1): request failed: EOF\n' } })
+  if (text.includes('OUTLIMIT')) {
+    update(s.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n⚠ Your previous response was cut off because it exceeded the output token limit\n' } })
+    update(s.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Please continue from where you left off, keeping your response shorter\nRetries remaining: 3\n' } })
+  }
   const lines = text.split('\n')
   let output = []
   for (const line of lines) {

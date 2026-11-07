@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Unlock all context-window gates in the agy CLI (plus optional env-var restore).
 
-Verified end-to-end on macOS (arm64) and Windows (x86-64 & arm64), agy 1.4.12 - 1.5.2.
-Container + Go pclntab locating supports Mach-O, ELF, and PE (arm64 & x86-64).
+Verified end-to-end on macOS (arm64), Linux (x86-64 & arm64), and Windows
+(x86-64 & arm64), agy 1.4.12 - 1.5.3. Container + Go pclntab locating supports
+Mach-O, ELF, and PE (arm64 & x86-64).
 
 Gate 1 -- model.SelectorModel.offersContextWindow
     Exposes /model -> Context: [Default] [256K] [512K] [900K] (Tab key) for all
@@ -156,6 +157,91 @@ def _macho_text(data):
     raise PatchError("__text section not found in Mach-O")
 
 
+def _elf_file_to_va(data, file_off):
+    phoff = struct.unpack_from("<Q", data, 32)[0]
+    phentsize, phnum = struct.unpack_from("<HH", data, 54)
+    for i in range(phnum):
+        ph = phoff + i * phentsize
+        if ph + 40 > len(data):
+            break
+        if struct.unpack_from("<I", data, ph)[0] != 1:  # PT_LOAD
+            continue
+        p_offset, p_vaddr, _p_paddr, p_filesz = struct.unpack_from("<QQQQ", data, ph + 8)
+        if p_offset <= file_off < p_offset + p_filesz:
+            return p_vaddr + (file_off - p_offset)
+    return None
+
+
+def _elf_go_text_va(data, t_va, t_sz, relas, symtabs):
+    """Locate Go `runtime.text` inside ELF `.text`.
+
+    External C linkers (glibc / musl cgo PIE) place CRT startup stubs at the
+    head of `.text` (`+0x80` on glibc x86-64, `+0xc0` on musl x86-64 and glibc
+    arm64), while Go `functab` `entryoff` values are relative to `runtime.text`.
+    """
+    pcln_off, _ = find_pclntab(data)
+    text_start, funcname_off = struct.unpack_from("<QQ", data, pcln_off + 24)
+    if t_va <= text_start < t_va + t_sz:
+        return text_start
+
+    pcln_va = _elf_file_to_va(data, pcln_off)
+    if pcln_va is not None:
+        fn_va = pcln_va + funcname_off
+        needle = struct.pack("<q", pcln_va)
+        for roff, rsz, entsz in relas:
+            pos = roff
+            end = roff + rsz
+            while True:
+                hit = data.find(needle, pos, end)
+                if hit < 0:
+                    break
+                pos = hit + 1
+                if (hit - roff) % entsz != 16:
+                    continue
+                ep = hit - 16
+                if ep + 2 * entsz > end:
+                    continue
+                mod_va = struct.unpack_from("<Q", data, ep)[0]
+                r_off2, _, r_add2 = struct.unpack_from("<QQq", data, ep + entsz)
+                if r_off2 != mod_va + 8 or r_add2 != fn_va:
+                    continue
+                mod_text = mod_etext = None
+                for k in range(2, 24):
+                    if ep + (k + 1) * entsz > end:
+                        break
+                    ro, _, ra = struct.unpack_from("<QQq", data, ep + k * entsz)
+                    if ro == mod_va + 0xB0:
+                        mod_text = ra
+                    elif ro == mod_va + 0xB8:
+                        mod_etext = ra
+                if (mod_text is not None and mod_etext is not None
+                        and t_va <= mod_text < mod_etext <= t_va + t_sz):
+                    return mod_text
+
+        pair = struct.pack("<QQ", pcln_va, fn_va)
+        pos = 0
+        while True:
+            hit = data.find(pair, pos)
+            if hit < 0 or hit + 0xC0 > len(data):
+                break
+            pos = hit + 1
+            mod_text, mod_etext = struct.unpack_from("<QQ", data, hit + 0xB0)
+            if t_va <= mod_text < mod_etext <= t_va + t_sz:
+                return mod_text
+
+    for sym_off, sym_sz, entsz, str_off in symtabs:
+        for pos in range(sym_off, sym_off + sym_sz, entsz):
+            if pos + 24 > len(data):
+                break
+            st_name, _info, _other, _shndx, st_val, _sz = struct.unpack_from("<IBBHQQ", data, pos)
+            end = data.find(b"\0", str_off + st_name, str_off + st_name + 64)
+            if end > 0 and data[str_off + st_name:end] == b"runtime.text":
+                if t_va <= st_val < t_va + t_sz:
+                    return st_val
+
+    raise PatchError("cannot locate Go runtime.text base in ELF")
+
+
 def _elf_text(data):
     if data[4] != 2 or data[5] != 1:
         raise PatchError("only 64-bit little-endian ELF is supported")
@@ -166,14 +252,32 @@ def _elf_text(data):
     shoff = struct.unpack_from("<Q", data, 40)[0]
     shentsize, shnum, shstrndx = struct.unpack_from("<HHH", data, 58)
     strtab_off = struct.unpack_from("<Q", data, shoff + shstrndx * shentsize + 24)[0]
+    text_sec = None
+    relas = []
+    symtabs = []
     for i in range(shnum):
         sh = shoff + i * shentsize
-        nameoff = struct.unpack_from("<I", data, sh)[0]
+        nameoff, sh_type = struct.unpack_from("<II", data, sh)
         end = data.find(b"\0", strtab_off + nameoff)
         if data[strtab_off + nameoff:end] == b".text":
-            addr, offset = struct.unpack_from("<QQ", data, sh + 16)
-            return addr, offset, arch
-    raise PatchError(".text section not found in ELF")
+            addr, offset, size = struct.unpack_from("<QQQ", data, sh + 16)
+            text_sec = (addr, offset, size)
+        elif sh_type == 4:  # SHT_RELA
+            r_off, r_sz = struct.unpack_from("<QQ", data, sh + 24)
+            r_ent = struct.unpack_from("<Q", data, sh + 56)[0] or 24
+            relas.append((r_off, r_sz, r_ent))
+        elif sh_type == 2:  # SHT_SYMTAB
+            s_off, s_sz = struct.unpack_from("<QQ", data, sh + 24)
+            s_link = struct.unpack_from("<I", data, sh + 40)[0]
+            s_ent = struct.unpack_from("<Q", data, sh + 56)[0] or 24
+            if s_link < shnum:
+                s_str = struct.unpack_from("<Q", data, shoff + s_link * shentsize + 24)[0]
+                symtabs.append((s_off, s_sz, s_ent, s_str))
+    if text_sec is None:
+        raise PatchError(".text section not found in ELF")
+    t_va, t_off, t_sz = text_sec
+    go_va = _elf_go_text_va(data, t_va, t_sz, relas, symtabs)
+    return go_va, t_off + (go_va - t_va), arch
 
 
 def _pe_text(data):

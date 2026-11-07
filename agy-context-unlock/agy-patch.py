@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unlock all context-window gates in the agy CLI (plus optional env-var restore).
 
-Verified end-to-end on macOS arm64, agy 1.4.12 and 1.5.0.
+Verified end-to-end on macOS (arm64) and Windows (x86-64 & arm64), agy 1.4.12 - 1.5.2.
 Container + Go pclntab locating supports Mach-O, ELF, and PE (arm64 & x86-64).
 
 Gate 1 -- model.SelectorModel.offersContextWindow
@@ -665,13 +665,17 @@ def _x86_step_dispatch(body):
 
 
 def _x86_find_epilogue(body, start):
-    """Locate `add $imm,%rsp ; pop %rbp ; ret` at/after `start`.
+    """Locate `add $imm,%rsp ; pop %rbp ; ret` or `leave ; ret` at/after `start`.
 
-    Returns (jump_rel, pop_rel) where jump_rel is the stack-dealloc site
-    (or the `pop %rbp` site when no `add` precedes it), or None.
+    Returns (jump_rel, end_rel) where jump_rel is the stack-dealloc site
+    (or the `pop %rbp` / `leave` site when no `add` precedes it), or None.
     """
-    pop = body.find(b"\x5d\xc3", start, min(len(body), start + 64))
-    if pop < 0 or pop < 4:
+    window_end = min(len(body), start + 64)
+    pop = body.find(b"\x5d\xc3", start, window_end)
+    leave = body.find(b"\xc9\xc3", start, window_end)
+    if leave >= 0 and (pop < 0 or leave < pop):
+        return leave, leave
+    if pop < 4:
         return None
     add = None
     for rel in range(max(0, pop - 16), pop - 2):
@@ -769,56 +773,93 @@ def _scan_oneharness_arm64(body):
     return None
 
 
-def _scan_oneharness_x86(body):
-    """Find `cmp $0xe,%r32 ; je ; cmp $0x17,%r32 ; jne ; xor %r32,%r32`.
-
-    Returns (je_rel, zero_rel) or None.
-    """
+def _x86_match_cmp_imm8(body, pos, rex, modrm, imm8):
     n = len(body)
-    for rel in range(0, max(0, n - 16)):
-        if body[rel] == 0x83:
-            rex, modrm, c0, je_rel = None, body[rel + 1], rel, rel + 3
-        elif body[rel] == 0x41 and rel + 4 < n and body[rel + 1] == 0x83:
-            rex, modrm, c0, je_rel = 0x41, body[rel + 2], rel + 1, rel + 4
-        else:
-            continue
-        if not 0xF8 <= modrm <= 0xFF or body[c0 + 2] != 0x0E:
-            continue
-        if je_rel + 1 >= n or body[je_rel] != 0x74:          # je rel8
-            continue
-        c17 = je_rel + 2
-        if rex is not None:
-            if c17 + 3 >= n or body[c17] != 0x41 or body[c17 + 1] != 0x83:
-                continue
-            if body[c17 + 2] != modrm or body[c17 + 3] != 0x17:
-                continue
-            jne = c17 + 4
-        else:
-            if c17 + 2 >= n or body[c17] != 0x83:
-                continue
-            if body[c17 + 1] != modrm or body[c17 + 2] != 0x17:
-                continue
-            jne = c17 + 3
-        if jne + 1 >= n or body[jne] != 0x75:                # jne rel8
-            continue
-        zero_rel = _x86_find_zeroing_xor(body, jne + 2)
-        if zero_rel is not None:
-            return je_rel, zero_rel
+    if rex is not None:
+        if pos + 4 <= n and body[pos] == rex and body[pos + 1] == 0x83 and body[pos + 2] == modrm and body[pos + 3] == imm8:
+            return pos + 4
+        return None
+    if pos + 3 <= n and body[pos] == 0x83 and body[pos + 1] == modrm and body[pos + 2] == imm8:
+        return pos + 3
     return None
+
+
+def _x86_zero_insn_len(body, pos):
+    """Return byte length (2 or 3) of `xor %r32,%r32` at `pos`, else 0."""
+    n = len(body)
+    if pos + 2 <= n and body[pos] == 0x31:
+        modrm = body[pos + 1]
+        if modrm >> 6 == 3 and (modrm >> 3) & 7 == modrm & 7:
+            return 2
+    if pos + 3 <= n and body[pos] == 0x45 and body[pos + 1] == 0x31:
+        modrm = body[pos + 2]
+        if modrm >> 6 == 3 and (modrm >> 3) & 7 == modrm & 7:
+            return 3
+    return 0
 
 
 def _x86_find_zeroing_xor(body, start):
     """Locate `xor %r32,%r32` (or `45 31 ..` r8d-r15d form) at/after `start`."""
     n = len(body)
     for rel in range(start, min(n - 2, start + 48)):
-        if body[rel] == 0x31:
-            modrm = body[rel + 1]
-            if modrm >> 6 == 3 and (modrm >> 3) & 7 == modrm & 7:
-                return rel
-        if rel + 2 < n and body[rel] == 0x45 and body[rel + 1] == 0x31:
-            modrm = body[rel + 2]
-            if modrm >> 6 == 3 and (modrm >> 3) & 7 == modrm & 7:
-                return rel
+        if _x86_zero_insn_len(body, rel) > 0:
+            return rel
+    return None
+
+
+def _scan_oneharness_x86(body):
+    """Find the OneHarness `0xe` / `0x17` step-type dispatch in x86-64 code.
+
+    Supports both compiler branch layouts:
+      - ("je", je_rel, zero_rel):
+            cmp $0xe,%r32 ; je <64k> ; cmp $0x17,%r32 ; jne <16k> ; xor %rDst,%rDst
+      - ("jne_fallthrough", fall_start, patched_fall):
+            cmp $0xe,%r32 ; jne <c17> ; <load 64k> ; jmp <merge>
+        c17:cmp $0x17,%r32 ; jne <16k> ; xor %rDst,%rDst ; jmp <merge>
+    """
+    n = len(body)
+    for rel in range(0, max(0, n - 16)):
+        if body[rel] == 0x83:
+            rex, modrm, c0, br_rel = None, body[rel + 1], rel, rel + 3
+        elif body[rel] == 0x41 and rel + 4 < n and body[rel + 1] == 0x83:
+            rex, modrm, c0, br_rel = 0x41, body[rel + 2], rel + 1, rel + 4
+        else:
+            continue
+        if not 0xF8 <= modrm <= 0xFF or body[c0 + 2] != 0x0E or br_rel + 1 >= n:
+            continue
+
+        op = body[br_rel]
+        if op == 0x74:  # je rel8
+            jne = _x86_match_cmp_imm8(body, br_rel + 2, rex, modrm, 0x17)
+            if jne is None or jne + 1 >= n or body[jne] != 0x75:
+                continue
+            zero_rel = _x86_find_zeroing_xor(body, jne + 2)
+            if zero_rel is not None:
+                return ("je", br_rel, zero_rel)
+
+        elif op == 0x75:  # jne rel8 (Go 1.24+ x86-64 fallthrough layout)
+            disp0 = body[br_rel + 1]
+            if not 4 <= disp0 <= 32:
+                continue
+            fall_start = br_rel + 2
+            c17 = fall_start + disp0
+            if c17 > n or body[c17 - 2] != 0xEB:  # fallthrough ends in jmp rel8
+                continue
+            merge_from_0e = c17 + struct.unpack_from("<b", body, c17 - 1)[0]
+            jne = _x86_match_cmp_imm8(body, c17, rex, modrm, 0x17)
+            if jne is None or jne + 1 >= n or body[jne] != 0x75:
+                continue
+            zero_rel = jne + 2
+            zlen = _x86_zero_insn_len(body, zero_rel)
+            jmp17 = zero_rel + zlen
+            if zlen == 0 or jmp17 + 1 >= n or body[jmp17] != 0xEB:
+                continue
+            merge_from_17 = (jmp17 + 2) + struct.unpack_from("<b", body, jmp17 + 1)[0]
+            slot_len = (c17 - 2) - fall_start
+            if merge_from_0e != merge_from_17 or slot_len < zlen:
+                continue
+            patched_fall = body[zero_rel:zero_rel + zlen] + (b"\x90" * (slot_len - zlen))
+            return ("jne_fallthrough", fall_start, patched_fall)
     return None
 
 
@@ -850,7 +891,17 @@ def patch_gate4b_oneharness_user_input(data, funcs, text_va, text_off, arch):
     if found is None:
         raise PatchError(f"{FUNC_ONEHARNESS_STEP}: x86-64 OneHarness step "
                          f"dispatch not found")
-    je_rel, zero_rel = found
+    if found[0] == "jne_fallthrough":
+        _, fall_start, patched_fall = found
+        end = fall_start + len(patched_fall)
+        if body[fall_start:end] == patched_fall:
+            return False, f"[Gate 4B] {FUNC_ONEHARNESS_STEP}: already patched"
+        data[fn_off + fall_start:fn_off + end] = patched_fall
+        return True, (f"[Gate 4B] {FUNC_ONEHARNESS_STEP}: routed "
+                      f"STEP_TYPE_USER_INPUT (0xe) to zero limit "
+                      f"@ {fn_va + fall_start:#x}")
+
+    _, je_rel, zero_rel = found
     patched_disp = zero_rel - (je_rel + 2)
     if not 0 <= patched_disp <= 0x7F:
         raise PatchError(f"{FUNC_ONEHARNESS_STEP}: x86-64 je target out of range")
@@ -983,8 +1034,58 @@ def resign(path, entitlements_xml=None, identifier=None):
             os.unlink(ent_file)
 
 
+def _strip_pe_authenticode(data):
+    """Clear PE CheckSum and trailing Authenticode Certificate Table after patching."""
+    if data[:2] != b"MZ":
+        return
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    if pe + 24 > len(data) or data[pe:pe + 4] != b"PE\0\0":
+        return
+    opt = pe + 24
+    magic = struct.unpack_from("<H", data, opt)[0]
+    dd_sec = opt + (144 if magic == 0x20B else 128 if magic == 0x10B else 0)
+    if dd_sec == 0 or dd_sec + 8 > len(data):
+        return
+    struct.pack_into("<I", data, opt + 64, 0)
+    cert_off, cert_size = struct.unpack_from("<II", data, dd_sec)
+    if cert_off > 0 and cert_size > 0:
+        struct.pack_into("<II", data, dd_sec, 0, 0)
+        if cert_off + cert_size == len(data):
+            del data[cert_off:]
+
+
+def _default_binary_path():
+    if sys.platform == "win32":
+        local_app = os.environ.get("LOCALAPPDATA") or os.path.join(
+            os.path.expanduser("~"), "AppData", "Local"
+        )
+        return os.path.join(local_app, "agy", "bin", "agy.exe")
+    return os.path.expanduser("~/.local/bin/agy")
+
+
+def _running_pids_for_binary(src):
+    if sys.platform == "win32":
+        exe_name = os.path.basename(src)
+        res = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {exe_name}", "/NH", "/FO", "CSV"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        pids = []
+        for line in res.stdout.splitlines():
+            parts = [p.strip('"') for p in line.split('","')]
+            if len(parts) >= 2 and parts[0].lower() == exe_name.lower() and parts[1].isdigit():
+                pids.append(parts[1])
+        return pids
+    running = subprocess.run(["pgrep", "-f", src], capture_output=True, text=True)
+    return [p for p in running.stdout.split() if p != str(os.getpid())]
+
+
 def write_atomic_signed(dst, data, src_for_entitlements=None, make_backup=False):
     """Write to a fresh inode, sign, then os.replace() to refresh macOS cs_blob cache."""
+    _strip_pe_authenticode(data)
     ent_xml = _extract_adhoc_safe_entitlements(src_for_entitlements or dst)
     ident = _extract_identifier(src_for_entitlements or dst)
     if make_backup and os.path.exists(dst):
@@ -999,7 +1100,13 @@ def write_atomic_signed(dst, data, src_for_entitlements=None, make_backup=False)
             fh.write(data)
         os.chmod(tmp, 0o755)
         resign(tmp, entitlements_xml=ent_xml, identifier=ident)
-        os.replace(tmp, dst)
+        try:
+            os.replace(tmp, dst)
+        except PermissionError as exc:
+            raise PatchError(
+                f"cannot overwrite {dst} ({exc.strerror or 'access denied'}); "
+                f"quit any running {os.path.basename(dst)} processes and retry"
+            ) from exc
     except Exception:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -1017,10 +1124,15 @@ def write_atomic_signed(dst, data, src_for_entitlements=None, make_backup=False)
 
 
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        reconf = getattr(stream, "reconfigure", None)
+        if callable(reconf):
+            reconf(encoding="utf-8", errors="replace")
+
     ap = argparse.ArgumentParser(
         description="Unlock all context-window gates (4A/4B) in the agy CLI."
     )
-    ap.add_argument("--binary", default=os.path.expanduser("~/.local/bin/agy"))
+    ap.add_argument("--binary", default=_default_binary_path())
     ap.add_argument("--no-env-fix", action="store_true",
                     help="skip optional AGY_CLI_AUTO_COMPACT_OVERRIDE restore")
     ap.add_argument("--no-backup", action="store_true",
@@ -1038,13 +1150,11 @@ def main():
         data = bytearray(fh.read())
     before = hashlib.sha256(data).hexdigest()
 
-    if sys.platform != "win32":
-        running = subprocess.run(["pgrep", "-f", src], capture_output=True, text=True)
-        pids = [p for p in running.stdout.split() if p != str(os.getpid())]
-        if pids:
-            print(f"[!] {len(pids)} process(es) are running this binary "
-                  f"(pid {', '.join(pids[:5])}); quit them first or the running "
-                  f"copy keeps executing the old code")
+    pids = _running_pids_for_binary(src)
+    if pids:
+        print(f"[!] {len(pids)} process(es) are running this binary "
+              f"(pid {', '.join(pids[:5])}); quit them first or replacing / "
+              f"reloading the binary may fail")
 
     text_va, text_off, arch = find_text_section(data)
     funcs = build_functions(bytes(data))
@@ -1075,9 +1185,21 @@ def main():
         return
 
     is_server_only = (FUNC_OFFERS not in funcs and FUNC_STORE_CW not in funcs)
+    base_lower = os.path.basename(src).lower()
+    if is_server_only and (base_lower == "agy" or base_lower.startswith("agy.")):
+        raise PatchError(
+            f"{src} is missing CLI context-window symbols (outdated agy < 1.4); "
+            f"upgrade first with `agy update` or reinstall from "
+            f"https://antigravity.google/docs/install?tab=cli"
+        )
     if is_server_only:
-        print("[i] mode   : standalone language_server (Gate 3A + Gate 3B)")
-        patch_pipeline = (patch_gate3a_checkpoint, patch_gate3b_exp_checkpoint)
+        print("[i] mode   : standalone language_server (Gate 3A/3B + Gate 4A/4B)")
+        patch_pipeline = (
+            patch_gate3a_checkpoint,
+            patch_gate3b_exp_checkpoint,
+            patch_gate4a_user_input_step,
+            patch_gate4b_oneharness_user_input,
+        )
     else:
         patch_pipeline = (
             patch_gate1_ui,

@@ -2,7 +2,7 @@
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, existsSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, chmodSync, utimesSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -12,6 +12,7 @@ import { AntigravityAdapter } from '../lib/adapter.js'
 import { Config } from '../lib/config.js'
 import { toTokenUsage } from '../lib/conversation.js'
 import { EMPTY_INPUT_CONTINUATION, LOCKED_REPLAY_BUDGET_BYTES } from '../lib/history.js'
+import { assertSupportedAgyVersion, checkUnlock, prepareHome, resolveAgyBinary, resolvePythonArgv, syncOAuthToken } from '../lib/preflight.js'
 import { sessionDbPath } from '../lib/usage-db.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -893,4 +894,114 @@ test('mixed SQLite step usage and final result.usage fallback subtracts already-
     totalTokens: 462,
   })
   assert.equal(u1.totalTokens + u2.totalTokens, 1050)
+})
+
+test('Windows preflight locates agy.exe in LOCALAPPDATA and PATH while skipping IDE shims and WindowsApps stubs', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agy-win-preflight-'))
+  const ideBin = join(root, 'Programs', 'Antigravity', 'bin')
+  const pathBin = join(root, 'custom-bin')
+  const localAppData = join(root, 'AppData', 'Local')
+  mkdirSync(ideBin, { recursive: true })
+  mkdirSync(pathBin, { recursive: true })
+  // Extensionless IDE shell shim and .cmd wrapper must not match on win32.
+  writeFileSync(join(ideBin, 'agy'), '#!/bin/sh\n')
+  writeFileSync(join(ideBin, 'agy.cmd'), '@echo off\r\n')
+  const pathAgyExe = join(pathBin, 'agy.exe')
+  writeFileSync(pathAgyExe, 'MZ')
+
+  assert.equal(
+    resolveAgyBinary('', {
+      platform: 'win32',
+      home: root,
+      env: { LOCALAPPDATA: localAppData, Path: `${ideBin};"${pathBin}"` },
+    }),
+    pathAgyExe,
+  )
+
+  const defaultWinExe = join(localAppData, 'agy', 'bin', 'agy.exe')
+  mkdirSync(dirname(defaultWinExe), { recursive: true })
+  writeFileSync(defaultWinExe, 'MZ')
+  assert.equal(
+    resolveAgyBinary('', {
+      platform: 'win32',
+      home: root,
+      env: { LOCALAPPDATA: localAppData, PATH: `${ideBin};${pathBin}` },
+    }),
+    defaultWinExe,
+  )
+
+  // Python lookup skips zero-byte Microsoft\WindowsApps stubs and picks real python.exe, or falls back to py.exe -3.
+  const winApps = join(localAppData, 'Microsoft', 'WindowsApps')
+  const condaDir = join(root, 'Python311')
+  const sysRoot = join(root, 'Windows')
+  mkdirSync(winApps, { recursive: true })
+  mkdirSync(condaDir, { recursive: true })
+  mkdirSync(sysRoot, { recursive: true })
+  writeFileSync(join(winApps, 'python.exe'), '')
+  writeFileSync(join(winApps, 'python3.exe'), '')
+  writeFileSync(join(sysRoot, 'py.exe'), 'MZ-py')
+
+  assert.deepEqual(
+    resolvePythonArgv({
+      platform: 'win32',
+      home: root,
+      env: { PATH: winApps, SystemRoot: sysRoot },
+    }),
+    [join(sysRoot, 'py.exe'), '-3'],
+  )
+
+  const realPy = join(condaDir, 'python.exe')
+  writeFileSync(realPy, 'MZ-python')
+  assert.deepEqual(
+    resolvePythonArgv({
+      platform: 'win32',
+      home: root,
+      env: { PATH: `${winApps};${condaDir}`, SystemRoot: sysRoot },
+    }),
+    [realPy],
+  )
+
+  const script = join(root, 'agy-patch.py')
+  writeFileSync(script, '# stub\n')
+  const calls = []
+  const unlock = await checkUnlock(
+    defaultWinExe,
+    script,
+    true,
+    async (argv) => {
+      calls.push(argv)
+      return { code: 0, stdout: '[=] all gates already unlocked; nothing to write\n', stderr: '' }
+    },
+    { platform: 'win32', home: root, env: { PATH: `${winApps};${condaDir}`, SystemRoot: sysRoot } },
+  )
+  assert.equal(unlock.status, 'unlocked')
+  assert.equal(calls[0][0], realPy)
+
+  assert.throws(() => assertSupportedAgyVersion('1.2.7', defaultWinExe), /1\.2\.7.*agy update/)
+  assert.doesNotThrow(() => assertSupportedAgyVersion('1.5.2', defaultWinExe))
+  assert.doesNotThrow(() => assertSupportedAgyVersion('Antigravity CLI 1.5.2', defaultWinExe))
+  assert.doesNotThrow(() => assertSupportedAgyVersion('fake-agy 0.0.1', defaultWinExe))
+
+  // File-backed OAuth token sync seeds isolated home and updates only when source is newer.
+  const cliAuthDir = join(root, '.gemini', 'antigravity-cli')
+  const isolatedHome = join(root, '.dsh', 'cache', 'antigravity-acp')
+  mkdirSync(cliAuthDir, { recursive: true })
+  const srcToken = join(cliAuthDir, 'antigravity-oauth-token')
+  const dstToken = join(isolatedHome, 'agy', 'antigravity-oauth-token')
+  writeFileSync(srcToken, 'token-v1')
+  utimesSync(srcToken, 1_700_000_100, 1_700_000_100)
+  prepareHome(isolatedHome, root)
+  assert.equal(readFileSync(dstToken, 'utf8'), 'token-v1')
+
+  // Newer refreshed token in isolated home is preserved over older CLI token.
+  writeFileSync(dstToken, 'token-refreshed')
+  utimesSync(dstToken, 1_700_000_200, 1_700_000_200)
+  syncOAuthToken(isolatedHome, root)
+  assert.equal(readFileSync(dstToken, 'utf8'), 'token-refreshed')
+
+  // Fresh terminal `agy` sign-in updates isolated home when source mtime advances.
+  writeFileSync(srcToken, 'token-v3')
+  utimesSync(srcToken, 1_700_000_300, 1_700_000_300)
+  syncOAuthToken(isolatedHome, root)
+  assert.equal(readFileSync(dstToken, 'utf8'), 'token-v3')
 })

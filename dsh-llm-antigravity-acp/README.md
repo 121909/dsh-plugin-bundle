@@ -15,7 +15,7 @@ flowchart LR
 
 | 环节 | 做法 |
 |---|---|
-| 进程 | 由 `ctx.subprocess` 启动本机官方 `agy acp`，凭据留在官方进程与 macOS 钥匙串 |
+| 进程 | 由 `ctx.subprocess` 启动本机官方 `agy acp`，凭据留在官方进程与系统凭据库（macOS 钥匙串 / Windows 凭据管理器） |
 | 客户端标识 | ACP `clientInfo.name` 使用 `jetbrains.dsh`。Antigravity 只向 JetBrains / Zed / Xcode 等白名单客户端下发 Claude 与 GPT-OSS 模型；普通客户端名称只看到 Gemini |
 | 隔离 | 独立 `--gemini-dir`（默认 `$DSH_HOME/cache/antigravity-acp`），不加载用户全局规则、技能、MCP；`dsh-bridge` agent 以 `tools: []` + `excludeDefaultComponents: true` 去掉全部内置工具 |
 | 工具 | DSH 工具经每会话独立的 MCP 端点暴露为 `mcp_dsh_<name>`；调用挂起，当前 DSH step 以 `finish(tool-calls)` 结束，DSH 审批并执行后在下一 step 回填，原 ACP turn 继续生成。会话创建时冻结 MCP `tools/list` 声明以固定前缀保住 Gemini 隐式缓存；中途按需解锁或禁用工具不重建会话，实时更新宿主白名单并经 `<harness_tool_update>` 增量下发 Schema，由内置 `dsh_call_tool` 原地调用 |
@@ -42,7 +42,7 @@ flowchart LR
 
 ## 安装
 
-前提：已安装官方 `agy` CLI 并在终端运行过一次完成登录。
+前提：已安装官方 `agy` CLI（`>= 1.5.0`，旧版先执行 `agy update`）并在终端运行过一次完成登录。
 
 ### 方式一：直接从 GitHub 插件仓库子目录安装（预编译产物，免本地构建）
 
@@ -61,7 +61,7 @@ pnpm dsh plugin --profile web add ./plugins/dsh-llm-antigravity-acp
 
 重启 Web 后，在模型选择器的 **Antigravity** 分组中选择模型，并在右侧选择思考档位。
 
-安装插件不会改写官方 `agy`。上下文窗口默认仍是 256K。要放到约 1M，另外使用同仓库的 [`agy-context-unlock`](../agy-context-unlock)，把 `agy-patch.py` 放到 `~/.gemini/antigravity/tools/agy-patch.py`。插件下次启动时，`autoPatch` 会去这个路径查找并调用它；找不到就保持官方的 256K。`agy` 升级后要再运行一次解锁脚本。
+安装插件不会改写官方 `agy`。上下文窗口默认仍是 256K。要放到约 1M，另外使用同仓库的 [`agy-context-unlock`](../agy-context-unlock)，把 `agy-patch.py` 放到 `~/.gemini/antigravity/tools/agy-patch.py`（Windows 为 `%USERPROFILE%\.gemini\antigravity\tools\agy-patch.py`）。插件下次启动时，`autoPatch` 会去这个路径查找并调用它；找不到就保持官方的 256K。`agy` 升级后插件启动时会自动检查并重打补丁。
 
 | 模型 | 上下文 | 思考档位 |
 |---|---|---|
@@ -75,7 +75,7 @@ pnpm dsh plugin --profile web add ./plugins/dsh-llm-antigravity-acp
 | 字段 | 默认值 | 说明 |
 |---|---|---|
 | `provider` | `antigravity` | 路由 id |
-| `command` | 空 | `agy` 绝对路径；空则查找 `~/.local/bin/agy` 与 PATH |
+| `command` | 空 | `agy` 绝对路径；空则在 macOS / Linux 查找 `~/.local/bin/agy` 与 `PATH`，在 Windows 查找 `%LOCALAPPDATA%\agy\bin\agy.exe`、`~/.local/bin/agy.exe` 与 `PATH` |
 | `home` | 空 | 隔离目录；空则 `$DSH_HOME/cache/antigravity-acp` |
 | `contextWindow` | `0` | 全局覆盖窗口；`0` 按模型选择：Gemini/Claude 解锁后 1,048,576、否则 256,000（可在设置页即时修改） |
 | `defaultEffort` | `high` | 请求未带档位时使用（可即时修改） |

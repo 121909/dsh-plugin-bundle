@@ -68,17 +68,18 @@ if (repo !== undefined) {
     '@deepseek-ai/cordis': 'vendor/cordis',
     '@types': 'node_modules/@types',
   }
+  const isWin = process.platform === 'win32'
   for (const [name, target] of Object.entries(links)) {
     const absolute = join(repo, target)
     if (!existsSync(join(absolute, 'package.json')) && !existsSync(join(absolute, 'node', 'package.json'))) continue
     const link = join(root, 'node_modules', name)
     mkdirSync(dirname(link), { recursive: true })
-    const wanted = relative(dirname(link), absolute)
+    const wanted = isWin ? absolute : relative(dirname(link), absolute)
     if (existsSync(link) || isLink(link)) {
-      if (isLink(link) && readlinkSync(link) === wanted) continue
+      if (isLink(link) && resolve(dirname(link), readlinkSync(link)) === resolve(absolute)) continue
       rmSync(link, { recursive: true, force: true })
     }
-    symlinkSync(wanted, link, 'dir')
+    symlinkSync(wanted, link, isWin ? 'junction' : 'dir')
   }
 }
 

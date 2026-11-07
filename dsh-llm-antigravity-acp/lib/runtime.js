@@ -17,7 +17,7 @@ import { AcpTurn, AWAIT_TOOL, AWAIT_TOOL_NAME, CALL_TOOL, CALL_TOOL_NAME, pumpSt
 import { AGENT_TOOL_PREFIX, bridgeSystemPrompt, inputPrompt, LOCKED_REPLAY_BUDGET_BYTES, MCP_SERVER_NAME, renderTranscript, replayPrompt, splitSystem, UNLOCKED_REPLAY_BUDGET_BYTES, } from "./history.js";
 import { JsonRpcClosedError, JsonRpcRemoteError } from "./jsonrpc.js";
 import { McpBridge } from "./mcp-bridge.js";
-import { BRIDGE_AGENT, checkUnlock, defaultHome, defaultPatchScript, GPT_OSS_CONTEXT_WINDOW, LOCKED_CONTEXT_WINDOW, prepareHome, readVersion, resolveAgyBinary, UNLOCKED_CONTEXT_WINDOW, } from "./preflight.js";
+import { assertSupportedAgyVersion, BRIDGE_AGENT, checkUnlock, defaultHome, defaultPatchScript, GPT_OSS_CONTEXT_WINDOW, LOCKED_CONTEXT_WINDOW, prepareHome, readVersion, resolveAgyBinary, syncOAuthToken, UNLOCKED_CONTEXT_WINDOW, } from "./preflight.js";
 import { QuotaReader } from "./quota.js";
 import { peekMaxModelStepIdx, readModelStepsAfter, sessionDbPath } from "./usage-db.js";
 import { delay, digest, KeyedMutex } from "./util.js";
@@ -386,10 +386,11 @@ export class AntigravityRuntime {
         this.preflightPromise ??= (async () => {
             const config = this.host.config;
             const binary = resolveAgyBinary(config.command);
+            const version = await readVersion(binary, this.host.runCommand);
+            assertSupportedAgyVersion(version, binary);
             const script = config.patchScript.length > 0 ? config.patchScript : defaultPatchScript();
             const unlock = await checkUnlock(binary, script, config.autoPatch, this.host.runCommand);
             this.host.log.info(`antigravity-acp: ${unlock.detail}`);
-            const version = await readVersion(binary, this.host.runCommand);
             const workspace = prepareHome(this.home);
             const result = { binary, version, home: this.home, workspace, logFile: join(this.home, 'acp.log'), unlock };
             this.preflight = result;
@@ -424,6 +425,7 @@ export class AntigravityRuntime {
         }
     }
     async openSession(conv, system, tools, proc) {
+        syncOAuthToken(this.home);
         conv.reportedToolCalls.clear();
         conv.advertisedTools = [...tools];
         conv.advertisedToolNames = new Set(tools.map(t => t.name));

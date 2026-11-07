@@ -23,8 +23,9 @@ import {
 import { JsonRpcClosedError, JsonRpcRemoteError } from './jsonrpc.ts'
 import { McpBridge, type BridgeCallRequest, type BridgeContent, type BridgeTool, type BridgeToolResult } from './mcp-bridge.ts'
 import {
-  BRIDGE_AGENT, checkUnlock, defaultHome, defaultPatchScript, GPT_OSS_CONTEXT_WINDOW, LOCKED_CONTEXT_WINDOW,
-  prepareHome, readVersion, resolveAgyBinary, UNLOCKED_CONTEXT_WINDOW, type CommandRunner, type PreflightResult,
+  assertSupportedAgyVersion, BRIDGE_AGENT, checkUnlock, defaultHome, defaultPatchScript, GPT_OSS_CONTEXT_WINDOW,
+  LOCKED_CONTEXT_WINDOW, prepareHome, readVersion, resolveAgyBinary, syncOAuthToken, UNLOCKED_CONTEXT_WINDOW,
+  type CommandRunner, type PreflightResult,
 } from './preflight.ts'
 import { QuotaReader } from './quota.ts'
 import { peekMaxModelStepIdx, readModelStepsAfter, sessionDbPath } from './usage-db.ts'
@@ -479,10 +480,11 @@ export class AntigravityRuntime {
     this.preflightPromise ??= (async () => {
       const config = this.host.config
       const binary = resolveAgyBinary(config.command)
+      const version = await readVersion(binary, this.host.runCommand)
+      assertSupportedAgyVersion(version, binary)
       const script = config.patchScript.length > 0 ? config.patchScript : defaultPatchScript()
       const unlock = await checkUnlock(binary, script, config.autoPatch, this.host.runCommand)
       this.host.log.info(`antigravity-acp: ${unlock.detail}`)
-      const version = await readVersion(binary, this.host.runCommand)
       const workspace = prepareHome(this.home)
       const result: PreflightResult = { binary, version, home: this.home, workspace, logFile: join(this.home, 'acp.log'), unlock }
       this.preflight = result
@@ -517,6 +519,7 @@ export class AntigravityRuntime {
   }
 
   private async openSession(conv: Conversation, system: string, tools: readonly BridgeTool[], proc: AcpProcess): Promise<void> {
+    syncOAuthToken(this.home)
     conv.reportedToolCalls.clear()
     conv.advertisedTools = [...tools]
     conv.advertisedToolNames = new Set(tools.map(t => t.name))

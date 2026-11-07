@@ -50,7 +50,7 @@ export function apply(ctx, config) {
             stdio: { stdin: 'ignore', stdout: { maxBytes: 8 * 1024 * 1024 }, stderr: { maxBytes: 256 * 1024 } },
             graceMs: 3_000,
             signal: AbortSignal.timeout(timeoutMs),
-            env,
+            env: { ...env, PYTHONUTF8: '1' },
         });
         const outcome = await handle.done;
         return {

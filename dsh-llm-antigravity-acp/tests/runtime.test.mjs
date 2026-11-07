@@ -1005,3 +1005,31 @@ test('Windows preflight locates agy.exe in LOCALAPPDATA and PATH while skipping 
   syncOAuthToken(isolatedHome, root)
   assert.equal(readFileSync(dstToken, 'utf8'), 'token-v3')
 })
+
+test('multi-turn tool calls mint distinct session-wide ToolCallIds so PTC subCallIds (<id>:ptc:1) never repeat across turns', async () => {
+  const { adapter } = makeRuntime()
+  const base = { provider: 'antigravity', model: 'gemini-4-argon', sessionId: 'S-ptc-unique', tools: [bash] }
+  let history = [sys]
+  const seenCallIds = new Set()
+  const seenPtcSubCallIds = new Set()
+
+  for (let turnIdx = 1; turnIdx <= 3; turnIdx++) {
+    history = [...history, user(`u${turnIdx}`, `CALL bash {"command":"echo turn-${turnIdx}"}`)]
+    const step1 = await collect(adapter.stream({ ...base, messages: history }))
+    assert.equal(finishOf(step1).reason.kind, 'tool-calls')
+    const [call] = callsOf(step1)
+    assert.match(call.id, /^agy_[0-9a-f]{12}_1$/, 'ToolCallId uses [a-z0-9_] only for cross-provider safety')
+    assert.equal(seenCallIds.has(call.id), false, `turn ${turnIdx} repeated ToolCallId ${call.id}`)
+    seenCallIds.add(call.id)
+    const ptcSubId = `${call.id}:ptc:1`
+    assert.equal(seenPtcSubCallIds.has(ptcSubId), false, `turn ${turnIdx} repeated PTC subCallId ${ptcSubId}`)
+    seenPtcSubCallIds.add(ptcSubId)
+
+    history = [...history, assistantFrom(`a${turnIdx}-1`, step1), tool(`t${turnIdx}`, call.id, `out-${turnIdx}`)]
+    const step2 = await collect(adapter.stream({ ...base, messages: history }))
+    assert.equal(finishOf(step2).reason.kind, 'stop')
+    history = [...history, assistantFrom(`a${turnIdx}-2`, step2)]
+  }
+  assert.equal(seenCallIds.size, 3)
+  assert.equal(seenPtcSubCallIds.size, 3)
+})

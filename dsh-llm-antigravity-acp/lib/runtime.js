@@ -40,6 +40,8 @@ export class AntigravityRuntime {
     lastError;
     conversations = new Map();
     tenants = new Map();
+    /** Per-turn call-id tags already issued or observed in history; keeps `<rootCallId>:ptc:<n>` unique session-wide. */
+    usedTurnTags = new Set();
     mutex = new KeyedMutex();
     /** Serializes capacity checks and session creation so concurrent requests cannot overshoot maxLiveSessions. */
     capacityMutex = new KeyedMutex();
@@ -257,7 +259,7 @@ export class AntigravityRuntime {
             // A new turn starts with an empty reported-identity space: ids from past
             // turns must never back a fresh permission request.
             conv.reportedToolCalls.clear();
-            conv.turn = new AcpTurn(conv.tag);
+            conv.turn = new AcpTurn(this.nextTurnTag(split.messages));
             if (conv.sessionId !== undefined) {
                 conv.usageCursor = peekMaxModelStepIdx(sessionDbPath(this.home, conv.sessionId));
             }
@@ -318,7 +320,6 @@ export class AntigravityRuntime {
         const conv = {
             key,
             purpose,
-            tag: randomBytes(3).toString('hex'),
             tenantKey: undefined,
             tenantSecret: undefined,
             sessionId: undefined,
@@ -731,7 +732,7 @@ export class AntigravityRuntime {
             const transcript = renderTranscript(pending.map(call => results.get(call.id)));
             // The old turn is over: its reported identities do not carry into the continuation.
             conv.reportedToolCalls.clear();
-            conv.turn = new AcpTurn(conv.tag);
+            conv.turn = new AcpTurn(this.nextTurnTag(messages));
             if (conv.sessionId !== undefined) {
                 conv.usageCursor = peekMaxModelStepIdx(sessionDbPath(this.home, conv.sessionId));
             }
@@ -882,6 +883,42 @@ export class AntigravityRuntime {
             if (this.isIdle(conv) && now - conv.lastUsed > ttl) {
                 void this.resetSession(conv);
                 this.conversations.delete(conv.key);
+            }
+        }
+    }
+    /**
+     * Mint a fresh 48-bit hex turn tag (`agy_<tag>_<n>`) disjoint from every
+     * call id already issued by this runtime or present in `messages`, so
+     * multi-turn tool calls and derived `<rootCallId>:ptc:<n>` sub-call ids
+     * never collide within a durable session.
+     */
+    nextTurnTag(messages) {
+        collectUsedTurnTags(messages, this.usedTurnTags);
+        for (;;) {
+            const candidate = randomBytes(6).toString('hex');
+            if (!this.usedTurnTags.has(candidate)) {
+                this.usedTurnTags.add(candidate);
+                return candidate;
+            }
+        }
+    }
+}
+function collectUsedTurnTags(messages, into) {
+    const recordId = (id) => {
+        if (typeof id !== 'string')
+            return;
+        const match = /^agy_([0-9a-f]+)_/i.exec(id);
+        if (match?.[1] !== undefined)
+            into.add(match[1].toLowerCase());
+    };
+    for (const message of messages) {
+        if (message.role === 'tool') {
+            recordId(message.toolCallId);
+        }
+        else if (message.role === 'assistant') {
+            for (const block of message.content) {
+                if (block.type === 'tool-call')
+                    recordId(block.id);
             }
         }
     }

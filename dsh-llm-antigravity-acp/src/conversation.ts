@@ -129,8 +129,8 @@ export class AcpTurn {
   }
   private nextCall = 0
 
-  /** @param sessionTag - short ACP session tag used in synthesized call ids. */
-  constructor(private readonly sessionTag: string) {}
+  /** @param turnTag - unique per-turn hex tag used in synthesized call ids (`agy_<turnTag>_<n>`). */
+  constructor(private readonly turnTag: string) {}
 
   /**
    * Record one batch of per-step model usage read from the local session DB.
@@ -153,7 +153,7 @@ export class AcpTurn {
    */
   park(name: string, args: Record<string, unknown>): ParkedCall {
     const call: ParkedCall = {
-      id: ToolCallId(`agy_${this.sessionTag}_${++this.nextCall}`),
+      id: ToolCallId(`agy_${this.turnTag}_${++this.nextCall}`),
       name,
       argumentsJson: JSON.stringify(args),
       result: deferred<BridgeToolResult>(),

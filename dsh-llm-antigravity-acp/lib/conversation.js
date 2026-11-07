@@ -76,7 +76,7 @@ export const CALL_TOOL = {
 };
 /** One running ACP prompt turn. */
 export class AcpTurn {
-    sessionTag;
+    turnTag;
     events = new AsyncQueue();
     /** Calls handed to DSH whose results have not arrived yet. */
     pendingCalls = new Map();
@@ -107,9 +107,9 @@ export class AcpTurn {
         thoughtTokens: 0,
     };
     nextCall = 0;
-    /** @param sessionTag - short ACP session tag used in synthesized call ids. */
-    constructor(sessionTag) {
-        this.sessionTag = sessionTag;
+    /** @param turnTag - unique per-turn hex tag used in synthesized call ids (`agy_<turnTag>_<n>`). */
+    constructor(turnTag) {
+        this.turnTag = turnTag;
     }
     /**
      * Record one batch of per-step model usage read from the local session DB.
@@ -131,7 +131,7 @@ export class AcpTurn {
      */
     park(name, args) {
         const call = {
-            id: ToolCallId(`agy_${this.sessionTag}_${++this.nextCall}`),
+            id: ToolCallId(`agy_${this.turnTag}_${++this.nextCall}`),
             name,
             argumentsJson: JSON.stringify(args),
             result: deferred(),

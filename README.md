@@ -81,6 +81,8 @@ omp -e /absolute/path/to/dsh-plugin-bundle --model antigravity/gemini-4-argon
 }
 ```
 
+手动应用 `agy-patch.py` 后，如果脚本不在默认位置，还需在配置中设置 `"patchScript": "/absolute/path/to/agy-patch.py"`。保持 `"autoPatch": false`、`"contextWindow": 0` 即可只读检测：扩展在注册模型前完成本地预检，确认解锁后声明 1,048,576 tokens；脚本缺失或结果不确定时仍保守使用 256,000。补丁或配置改变后重启 omp，已运行的进程不会自动重载二进制与窗口状态。
+
 完整配置、桥接机制和限制见 [`omp-antigravity-acp/README.md`](./omp-antigravity-acp/README.md)。
 
 ## 安全与限制

@@ -6,7 +6,7 @@ import { AntigravityRuntime } from './runtime.ts'
 import { loadConfig } from './settings.ts'
 
 /** Each factory binding owns a runtime; OMP subagents never dispose their parent's sessions. */
-export default function antigravity(pi: ExtensionAPI): void {
+export default async function antigravity(pi: ExtensionAPI): Promise<void> {
   const config = loadConfig(getAgentDir())
   const runtime = new AntigravityRuntime({
     config, spawnAcp, runCommand,
@@ -15,6 +15,11 @@ export default function antigravity(pi: ExtensionAPI): void {
     canReadImages: () => true,
     log: { info: message => pi.logger.debug(message), warn: message => pi.logger.warn(message) },
   })
+  try {
+    await runtime.prepare()
+  } catch (error) {
+    pi.logger.warn(`Antigravity preflight: ${error instanceof Error ? error.message : String(error)}`)
+  }
 
   const models = (): ProviderModelConfig[] => runtime.catalog.list().map(model => {
     const efforts = runtime.catalog.effortsFor(model.id)

@@ -440,7 +440,7 @@ export class AntigravityRuntime {
   private async start(): Promise<AcpProcess> {
     this.state = 'starting'
     try {
-      const preflight = await this.runPreflight()
+      const preflight = await this.prepare()
       await this.bridge.start()
       const argv = [
         preflight.binary, 'acp',
@@ -474,7 +474,9 @@ export class AntigravityRuntime {
     }
   }
 
-  private runPreflight(): Promise<PreflightResult> {
+  /** Prepare local metadata before model registration, without starting ACP or sending inference. */
+  prepare(): Promise<PreflightResult> {
+    if (this.disposed) return Promise.reject(new LlmError('Antigravity provider was disposed', 'TRANSPORT'))
     if (this.preflight !== undefined) return Promise.resolve(this.preflight)
     this.preflightPromise ??= (async () => {
       const config = this.host.config

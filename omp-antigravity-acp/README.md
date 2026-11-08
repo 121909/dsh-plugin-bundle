@@ -23,6 +23,8 @@ omp agent loop
 
 每次 omp 扩展 factory 绑定独立 runtime，避免子会话退出时关闭父会话。`options.sessionId` 关联宿主和 ACP 会话；缺少宿主 session id 的请求为一次性会话。历史改变时按 `<omp_history>` 转录重建，不继续使用过期上下文。图片按 ACP/MCP 图片块传递。
 
+扩展 factory 在注册模型之前等待 `runtime.prepare()` 完成本地预检，不启动 ACP、不发送推理请求。这样静态模型元数据从第一次注册就反映补丁状态，避免预检前注册的 256K 窗口覆盖后续动态目录。预检结果在该 runtime 内复用；补丁或配置改变后需要重启 omp。
+
 工具声明在会话创建时冻结，减少缓存失效；新增/修改工具通过增量 schema 和 `omp_call_tool` 调用，宿主白名单实时生效。长工具默认在 85 秒时返回仍在运行提示，官方 agent 通过 `omp_await_result` 等待原结果；omp 仍只执行一次工具。
 
 ## 配置

@@ -1,0 +1,22 @@
+{
+  "name": "omp-antigravity-bundle",
+  "version": "1.0.0",
+  "description": "OMP model provider for the official Antigravity CLI over ACP, with OMP-owned tools and permissions.",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/121909/dsh-plugin-bundle.git" },
+  "engines": { "node": ">=22.19" },
+  "omp": { "extensions": ["./omp-antigravity-acp/lib/index.js"] },
+  "files": ["omp-antigravity-acp/lib", "omp-antigravity-acp/package.json", "omp-antigravity-acp/README.md", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "node omp-antigravity-acp/scripts/build.mjs",
+    "typecheck": "node omp-antigravity-acp/scripts/build.mjs --check",
+    "test": "node --test --test-concurrency=1 omp-antigravity-acp/tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-ai": "18.15.0",
+    "@oh-my-pi/pi-coding-agent": "18.15.0",
+    "@types/node": "^22.19.0",
+    "typescript": "^5.9.3"
+  }
+}

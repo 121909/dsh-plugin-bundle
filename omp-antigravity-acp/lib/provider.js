@@ -5,7 +5,7 @@ export const ACP_API = 'omp-antigravity-acp';
 function toRequest(model, context, options, fallback) {
     const level = options?.forceReasoningOff ? 'low' : options?.reasoning;
     const reasoningEffort = level === 'minimal' || level === 'low' ? 'low'
-        : level === 'medium' ? 'medium' : level === 'high' || level === 'xhigh' || level === 'max' ? 'high' : fallback;
+        : level === 'medium' ? 'medium' : level === 'high' ? 'high' : level === 'xhigh' || level === 'max' ? 'xhigh' : fallback;
     return {
         provider: model.provider, model: model.id, messages: toMessages(context.messages),
         system: context.systemPrompt?.join('\n\n') ?? '', reasoningEffort,

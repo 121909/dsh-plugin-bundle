@@ -32,7 +32,7 @@ export function loadConfig(agentDir) {
             throw new Error(`Antigravity ${key} must be ${typeof DEFAULT_CONFIG[key]}`);
         }
         if (key === 'defaultEffort' && !EFFORTS.includes(value))
-            throw new Error('Antigravity defaultEffort must be low, medium, or high');
+            throw new Error('Antigravity defaultEffort must be low, medium, high, or xhigh');
         Object.assign(config, { [key]: value });
     }
     if (config.home.length > 0)

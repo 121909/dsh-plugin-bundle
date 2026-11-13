@@ -29,7 +29,7 @@ export function loadConfig(agentDir: string): Config {
     } else if (typeof value !== typeof DEFAULT_CONFIG[key as keyof Config]) {
       throw new Error(`Antigravity ${key} must be ${typeof DEFAULT_CONFIG[key as keyof Config]}`)
     }
-    if (key === 'defaultEffort' && !EFFORTS.includes(value as Config['defaultEffort'])) throw new Error('Antigravity defaultEffort must be low, medium, or high')
+    if (key === 'defaultEffort' && !EFFORTS.includes(value as Config['defaultEffort'])) throw new Error('Antigravity defaultEffort must be low, medium, high, or xhigh')
     Object.assign(config, { [key]: value })
   }
   if (config.home.length > 0) config.home = resolve(config.home)

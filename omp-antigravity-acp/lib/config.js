@@ -3,7 +3,7 @@
  * @module omp-antigravity-acp/config
  */
 /** Reasoning effort ids accepted by the Antigravity ACP `thought_level` option. */
-export const EFFORTS = ['low', 'medium', 'high'];
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 /** Defaults applied by the extension before constructing the runtime. */
 export const DEFAULT_CONFIG = {
     provider: 'antigravity',

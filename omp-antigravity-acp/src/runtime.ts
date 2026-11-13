@@ -652,6 +652,15 @@ export class AntigravityRuntime {
     if (modelOption?.options !== undefined && !modelOption.options.some(o => o.value === model)) {
       throw new LlmError(`Antigravity does not offer model "${model}" to this account; available: ${modelOption.options.map(o => o.value).join(', ')}`, 'UNKNOWN_MODEL')
     }
+    const variant = this.catalog.variantFor(model, effort)
+    if (variant !== undefined) {
+      if (conv.model !== model || conv.effort !== effort) {
+        await proc.request('session/set_model', { sessionId, modelId: variant }, 60_000).catch((error: unknown) => { throw mapError(error) })
+      }
+      conv.model = model
+      conv.effort = effort
+      return
+    }
     if (conv.model !== model && modelOption?.currentValue !== model) {
       conv.configOptions = await proc.setConfigOption(sessionId, modelOption?.id ?? 'model', model).catch((error: unknown) => { throw mapError(error) })
     }

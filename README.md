@@ -58,8 +58,9 @@ omp -e /absolute/path/to/dsh-plugin-bundle --model antigravity/gemini-4-argon
 - `/antigravity status`：连接状态、隔离目录、上下文窗口、活动会话。
 - `/antigravity models`：连接官方 ACP、刷新模型目录并重新注册模型。
 - `/antigravity usage`：通过官方 `/usage` 读取额度，不发送模型推理请求。
-- omp 原生思考档位支持 `low` / `medium` / `high`；其他档位向最近支持值映射。ACP 没有关闭思考的通道，关闭请求按 `low` 处理。
-- omp 的原生 `/usage` 可读取此 provider 的每周和短时额度窗口。
+- 思考档位按账号返回的每模型目录声明：Gemini 4 Hydrogen 支持 `low` / `medium` / `high` / `xhigh`，Argon 等三档模型会把 `xhigh` 请求收敛到 `high`。`max` 映射到模型可用的最高档；ACP 没有关闭思考的通道，关闭请求按 `low` 处理。
+- 新增模型自动从 ACP 目录发现，无需硬编码模型名：`antigravity/gemini-4-hydrogen` 和 `antigravity/gemini-pro-orchestrator-g1-pro`（Orchestrator）。Hydrogen 的 XHigh 需要新版官方 CLI；若配置 `command` 指向旧的补丁副本，也需升级该副本，而不只是更新 PATH 中的 `agy`。
+- Hydrogen XHigh 已通过官方终端和精简 ACP 工具请求实测；部分包含完整 omp 默认系统提示的 ACP 请求仍返回 `Thinking level is unsupported: THINKING_LEVEL_XHIGH`，上游具体原因未确定。Hydrogen High 工具闭环和 Orchestrator 生成已通过。
 
 ## 配置
 

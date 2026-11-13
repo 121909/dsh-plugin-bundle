@@ -354,11 +354,19 @@ test('Claude honors the requested thinking level', async () => {
   assert.equal(prompts()[0].level, 'high')
 })
 
-test('a live session folds availableModels into per-family efforts', async () => {
-  const { runtime } = makeRuntime()
-  await collect(runtime.stream({ provider: 'antigravity', model: 'gemini-4-argon', sessionId: 'S16', messages: [sys, user('u1', 'hello')] }))
-  assert.deepEqual(runtime.catalog.effortsFor('claude-opus-5-5'), ['low', 'medium', 'high'])
-  assert.deepEqual(runtime.catalog.list().map(m => m.id), ['gemini-4-argon', 'gemini-3.8-flash', 'claude-opus-5-5'])
+test('model-specific effort inventories preserve XHigh and keep fixed models free of thought-level writes', async () => {
+  const { runtime, prompts } = makeRuntime()
+  const base = { provider: 'antigravity', sessionId: 'new-models', reasoningEffort: 'xhigh' }
+  const hydrogen = await collect(runtime.stream({ ...base, model: 'gemini-4-hydrogen', messages: [sys, user('h1', 'hello')] }))
+  assert.equal(finishOf(hydrogen).reason.kind, 'stop')
+  assert.equal(prompts()[0].level, 'xhigh')
+  assert.deepEqual(runtime.catalog.effortsFor('gemini-4-hydrogen'), ['low', 'medium', 'high', 'xhigh'])
+  const argon = await collect(runtime.stream({ ...base, model: 'gemini-4-argon', messages: [sys, user('a1', 'hello')] }))
+  assert.equal(finishOf(argon).reason.kind, 'stop')
+  assert.equal(prompts()[1].level, 'high', 'models without XHigh clamp to their highest supported effort')
+  const orchestrator = await collect(runtime.stream({ ...base, model: 'gemini-pro-orchestrator-g1-pro', messages: [sys, user('o1', 'hello')] }))
+  assert.equal(finishOf(orchestrator).reason.kind, 'stop')
+  assert.deepEqual(runtime.catalog.effortsFor('gemini-pro-orchestrator-g1-pro'), [])
 })
 
 test('a hidden fixed-effort family still runs at medium without a thought_level write', async () => {

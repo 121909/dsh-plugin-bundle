@@ -38,7 +38,7 @@ omp agent loop
 | `command` | 空 | 官方 agy 路径；为空自动查找本机安装和 PATH |
 | `home` | 当前 agent 目录下 `cache/antigravity-acp` | 隔离 CLI 配置、会话库、日志、模型目录缓存；不同 omp profile 默认隔离 |
 | `contextWindow` | `0` | 自动按未解锁 256,000、确认解锁后 1,048,576 声明；非零显式覆盖 |
-| `defaultEffort` | `high` | 未指定思考档位时使用；`low` / `medium` / `high` |
+| `defaultEffort` | `high` | 未指定思考档位时使用；`low` / `medium` / `high` / `xhigh`，按每模型支持范围收敛 |
 | `autoPatch` | `false` | 是否允许调用本地脚本修改官方二进制；接入无需开启 |
 | `patchScript` | 空 | 空时查找 `~/.gemini/antigravity/tools/agy-patch.py` |
 | `maxLiveSessions` | `16` | runtime 同时保留会话上限，1..64 |
@@ -55,11 +55,12 @@ omp agent loop
 1. 官方 `agy >= 1.5.0` 必须已登录：`agy acp --login`。认证错误会作为 omp 错误事件返回，不改用其他模型或网关。
 2. 沿用上游白名单机制，ACP 握手使用 `jetbrains.omp`。第三方模型取决于上游允许的客户端与套餐；并非官方 JetBrains 集成。
 3. Claude Sonnet 5.5 与 GPT-OSS 仍沿用原项目的目录隐藏规则。模型可用性最终由 ACP session 返回值验证。
-4. 不支持 ACP 没有的采样参数或强制关闭思考。omp 的 `minimal`/关闭映射 `low`，`xhigh`/`max` 映射 `high`。`maxTokens: 64000` 是注册元数据，不是服务端输出约束。
-5. 官方 CLI 运行在空的隔离 workspace，避免加载用户项目规则、技能与内置执行工具。实际工具 cwd 仍由 omp 管理。
-6. 不继承 omp 进程中的其他模型 API 凭据；仅向子进程传递运行环境、代理和证书路径等必要变量。
-7. 登录凭据不写入 omp 的 provider key 配置。无凭据库环境会同步官方 `~/.gemini/antigravity-cli` 或 `~/.gemini/antigravity` 下的 token 文件到隔离目录（`0600`）；该目录和官方会话日志应按敏感数据保管。
-8. 模型按订阅调用，注册的 token 单价为 0，不代表没有订阅费用或额度消耗。额度显示通过官方 `agy -p /usage` 获取。
+4. 不支持 ACP 没有的采样参数或强制关闭思考。omp 的 `minimal`/关闭映射 `low`，`xhigh`/`max` 映射 `xhigh` 后按模型支持范围收敛。Hydrogen 目录提供 XHigh；Argon 等三档模型仍使用 High。无独立档位的 Orchestrator 不写 `thought_level`。账号公布完整模型变体时，通过 `session/set_model` 原子选择；否则沿用配置选项接口。`maxTokens: 64000` 是注册元数据，不是服务端输出约束。
+5. agy 1.5.7 的 Hydrogen XHigh 已通过官方终端和精简 ACP 工具请求实测；包含完整 omp 默认系统提示的若干 ACP 请求返回 `Thinking level is unsupported: THINKING_LEVEL_XHIGH`。请求差异与失败有关，但上游具体原因未确定，不保证所有 XHigh 请求可用。Hydrogen High 工具闭环已通过。
+6. 官方 CLI 运行在空的隔离 workspace，避免加载用户项目规则、技能与内置执行工具。实际工具 cwd 仍由 omp 管理。
+7. 不继承 omp 进程中的其他模型 API 凭据；仅向子进程传递运行环境、代理和证书路径等必要变量。
+8. 登录凭据不写入 omp 的 provider key 配置。无凭据库环境会同步官方 `~/.gemini/antigravity-cli` 或 `~/.gemini/antigravity` 下的 token 文件到隔离目录（`0600`）；该目录和官方会话日志应按敏感数据保管。
+9. 模型按订阅调用，注册的 token 单价为 0，不代表没有订阅费用或额度消耗。额度显示通过官方 `agy -p /usage` 获取。
 
 ## 构建和回归
 

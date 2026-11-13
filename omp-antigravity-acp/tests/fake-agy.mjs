@@ -30,6 +30,8 @@ const rl = createInterface({ input: process.stdin })
 const send = (m) => process.stdout.write(`${JSON.stringify(m)}\n`)
 const MODELS = [
   { value: 'gemini-4-argon', name: 'Gemini 4 Argon' },
+  { value: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen' },
+  { value: 'gemini-pro-orchestrator-g1-pro', name: 'Orchestrator (Argon)' },
   { value: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
   { value: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
   { value: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
@@ -39,11 +41,13 @@ const MODELS = [
 const availableModels = () => [
   ...['gemini-4-argon', 'gemini-3.8-flash', 'claude-opus-5-5', 'claude-sonnet-5-5'].flatMap(id =>
     ['low', 'medium', 'high'].map(level => ({ modelId: `${id}-${level}`, name: `${id} (${level})` }))),
+  ...['low', 'medium', 'high', 'xhigh'].map(level => ({ modelId: `gemini-4-hydrogen-${level}`, name: `Gemini 4 Hydrogen (${level})` })),
+  { modelId: 'gemini-pro-orchestrator-g1-pro', name: 'Orchestrator (Argon)' },
   { modelId: 'gpt-oss-120b-medium', name: 'GPT-OSS 120B (Medium)' },
 ]
 const configOptions = (s) => [
   { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: s.model, options: MODELS },
-  { id: 'thought_level', name: 'Thinking Level', category: 'thought_level', type: 'select', currentValue: s.level, options: [{ value: 'low', name: 'Low' }, { value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }] },
+  { id: 'thought_level', name: 'Thinking Level', category: 'thought_level', type: 'select', currentValue: s.level, options: (s.model === 'gemini-4-hydrogen' ? ['low', 'medium', 'high', 'xhigh'] : ['low', 'medium', 'high']).map(value => ({ value, name: value })) },
 ]
 const update = (sessionId, u) => send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: u } })
 
@@ -248,11 +252,19 @@ rl.on('line', async (line) => {
       return send({ jsonrpc: '2.0', id, result: { sessionId: s.id, configOptions: configOptions(s), models: { availableModels: availableModels(), currentModelId: `${s.model}-${s.level}` } } })
     }
     const s = sessions.get(params?.sessionId)
+    if (method === 'session/set_model') {
+      const offered = availableModels().find(model => model.modelId === params.modelId)
+      if (!offered) return send({ jsonrpc: '2.0', id, error: { code: -32602, message: 'Unknown model variant' } })
+      const match = /^(.*)-(low|medium|high|xhigh)$/.exec(params.modelId)
+      s.model = match[1]
+      s.level = match[2]
+      return send({ jsonrpc: '2.0', id, result: {} })
+    }
     if (method === 'session/set_config_option') {
       if (params.configId === 'model') s.model = params.value
       if (params.configId === 'thought_level') {
         // Fixed-variant families do not expose a thinking-level selector.
-        if (s.model.startsWith('gpt-oss')) {
+        if (!configOptions(s).find(option => option.id === 'thought_level').options.some(option => option.value === params.value) || s.model.startsWith('gpt-oss') || s.model === 'gemini-pro-orchestrator-g1-pro') {
           return send({ jsonrpc: '2.0', id, error: { code: -32602, message: `Thinking level "${params.value}" is not offered for model "${s.model}"` } })
         }
         s.level = params.value

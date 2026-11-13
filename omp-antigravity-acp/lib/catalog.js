@@ -29,9 +29,9 @@ export function isHiddenModel(id) {
     return HIDDEN_MODEL.test(id);
 }
 /** Display names of the efforts. */
-export const EFFORT_NAMES = { low: 'Low', medium: 'Medium', high: 'High' };
+export const EFFORT_NAMES = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh' };
 /** An id that already names one fixed effort instead of a selectable family. */
-const FIXED_EFFORT = /-(low|medium|high)$/;
+const FIXED_EFFORT = /-(low|medium|high|xhigh)$/;
 /**
  * Pick the offered effort closest to the requested one.
  * @param wanted - requested effort.
@@ -102,6 +102,11 @@ export class ModelCatalog {
     find(id) {
         return this.models.find(model => model.id === id);
     }
+    /** Exact ACP model variant, when the account advertises one. */
+    variantFor(id, effort) {
+        const variant = `${id}-${effort}`;
+        return this.available?.some(model => model.modelId === variant) ? variant : undefined;
+    }
     /**
      * Fold session configuration options and the session's model inventory into
      * the catalog.
@@ -153,7 +158,7 @@ export class ModelCatalog {
             const present = this.available.some(entry => entry.modelId === model.id || entry.modelId.startsWith(`${model.id}-`));
             if (!present)
                 continue;
-            if ((this.byModel.get(model.id) ?? []).length !== 0) {
+            if (this.byModel.get(model.id)?.length !== 0) {
                 this.byModel.set(model.id, []);
                 changed = true;
             }
